@@ -14,8 +14,8 @@ Rather than relying on resource-intensive backend application loops to calculate
 
 * `schema.sql` — The core relational blueprint defining production tables, multi-column foreign key rules, and automated analytical views.
 * `db_initializer.py` — A transaction-safe database builder script that initializes tables and mounts structural views.
-* `standing_manager.py` — The core single-match processing engine that handles payloads, normalizes raw event types, and cleanly executes database mutations.
-* `batch_orchestrator.py` — The master loop pipeline that queries tournament endpoints, screens match completion status, and sequentially processes data with rate-limiting controls.
+* `ingest_espn.py` — The core single-match processing engine that handles payloads, normalizes raw event types, and cleanly executes database mutations.
+* `batch_run.py` — The master loop pipeline that queries tournament endpoints, screens match completion status, and sequentially processes data with rate-limiting controls.
 
 ---
 
