@@ -62,4 +62,5 @@ Aggregates and metrics every tracked card type alongside a conditional count of 
 1. **Initialize the Database Sandbox:**
 
    ```bash
+   pip install -r requirements.txt
    python db_initializer.py
