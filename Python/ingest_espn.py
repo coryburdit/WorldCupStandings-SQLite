@@ -10,8 +10,8 @@ warnings.filterwarnings("ignore", message=".*urllib3.*")
 
 def init_user_db():
     conn = sqlite3.connect("2026WorldCup.db")
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA foreign_keys = ON;")
+    # Foreign key enforcement must be turned on for EVERY connection instance
+    conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
 
@@ -63,114 +63,117 @@ def ingest_espn_match(game_id):
         away_group = away_row[1] if away_row else None
 
         if not home_name or not away_name:
-            print(f"❌ Ingestion stopped: Missing team mappings in 'groups' table.")
+            print(f"❌ Ingestion stopped: Missing team mappings in 'groups' table for {raw_home.get('code')} or {raw_away.get('code')}.")
             conn.close()
             return
 
-        # --- 3. Defensive Design: Clear Existing Match Rows First ---
-        cursor.execute("DELETE FROM matchresults WHERE match_id = ?", (game_id,))
-        cursor.execute("DELETE FROM matcheventlogs WHERE match_id = ?", (game_id,))
+        # --- 3. BEGIN TRANSACTION BLOCK ---
+        # Wrapping operations in a context manager automatically commits on success or rolls back on error
+        with conn:
+            conn.execute("BEGIN TRANSACTION;")
 
-        # --- 4. Commit Match Results ---
-        cursor.execute(
-            """
-            INSERT INTO matchresults 
-            (match_id, HomeTeamName, HomeTeamCode, status, Home_goals_scored, AwayTeamName, AwayTeamCode, Away_goals_scored)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                game_id,
-                home_name,
-                raw_home["code"],
-                status,
-                raw_home["score"],
-                away_name,
-                raw_away["code"],
-                raw_away["score"],
-            ),
-        )
+            # Clear out existing match event rows first to avoid cascading key blocks
+            cursor.execute("DELETE FROM matcheventlogs WHERE match_id = ?", (game_id,))
+            cursor.execute("DELETE FROM matchresults WHERE match_id = ?", (game_id,))
 
-        # --- 5. Stream Timeline Events ('keyEvents') ---
-        timeline = data.get("keyEvents", [])
-        events_inserted = 0
-
-        for item in timeline:
-            raw_type = item.get("type", {}).get("text", "")
-            team_obj = item.get("team")
-
-            if not team_obj:
-                continue
-
-            event_team_id = str(team_obj.get("id"))
-
-            if event_team_id == raw_home["id"]:
-                event_team_name = home_name
-                event_team_code = raw_home["code"]
-                event_group = home_group
-            elif event_team_id == raw_away["id"]:
-                event_team_name = away_name
-                event_team_code = raw_away["code"]
-                event_group = away_group
-            else:
-                continue
-
-            event_time = item.get("clock", {}).get("displayValue", "0'")
-
-            # ⚽ Refined Player Name Lookup for Soccer Feeds
-            player_obj = {}
-            if item.get("participants"):
-                player_obj = item["participants"][0].get("athlete", {})
-            else:
-                player_obj = item.get("player") or item.get("athlete") or {}
-
-            player_name = player_obj.get("displayName", "Unknown Player")
-
-            # Filter and normalize card variants
-            raw_type_lower = raw_type.lower()
-            event_type = None
-            
-            # Indentation fixed to exactly 12 spaces inside loop execution logic
-            if "second yellow card" in raw_type_lower or "second yellow" in raw_type_lower:
-                event_type = "Second Yellow Card"
-            elif "yellow card" in raw_type_lower:
-                event_type = "Yellow Card"
-            elif "red card" in raw_type_lower:
-                event_type = "Red Card"
-            elif "goal" in raw_type_lower:
-                event_type = "Goal"
-            else:
-                event_type = "Unknown Event"
-
-            # Skip writing completely untracked events to save space
-            if event_type == "Unknown Event":
-                continue
-
+            # --- 4. Commit Match Results ---
             cursor.execute(
                 """
-                INSERT INTO matcheventlogs (match_id, TeamName, TeamCode, event_type, event_time, player_name, GroupLetter)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO matchresults 
+                (match_id, HomeTeamName, HomeTeamCode, status, Home_goals_scored, AwayTeamName, AwayTeamCode, Away_goals_scored)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    game_id,
-                    event_team_name,
-                    event_team_code,
-                    event_type,
-                    event_time,
-                    player_name,
-                    event_group,
+                    int(game_id), # Ensure integer casting matches schema primary key definition
+                    home_name,
+                    raw_home["code"],
+                    status,
+                    raw_home["score"],
+                    away_name,
+                    raw_away["code"],
+                    raw_away["score"],
                 ),
             )
-            events_inserted += 1
 
-        conn.commit()
+            # --- 5. Stream Timeline Events ('keyEvents') ---
+            timeline = data.get("keyEvents", [])
+            events_inserted = 0
+
+            for item in timeline:
+                raw_type = item.get("type", {}).get("text", "")
+                team_obj = item.get("team")
+
+                if not team_obj:
+                    continue
+
+                event_team_id = str(team_obj.get("id"))
+
+                if event_team_id == raw_home["id"]:
+                    event_team_name = home_name
+                    event_team_code = raw_home["code"]
+                    event_group = home_group
+                elif event_team_id == raw_away["id"]:
+                    event_team_name = away_name
+                    event_team_code = raw_away["code"]
+                    event_group = away_group
+                else:
+                    continue
+
+                event_time = item.get("clock", {}).get("displayValue", "0'")
+
+                # Player Name Lookup
+                player_obj = {}
+                if item.get("participants"):
+                    player_obj = item["participants"][0].get("athlete", {})
+                else:
+                    player_obj = item.get("player") or item.get("athlete") or {}
+
+                player_name = player_obj.get("displayName", "Unknown Player")
+
+                # Filter and normalize card variants
+                raw_type_lower = raw_type.lower()
+                event_type = None
+                
+                if "second yellow card" in raw_type_lower or "second yellow" in raw_type_lower:
+                    event_type = "Second Yellow Card"
+                elif "yellow card" in raw_type_lower:
+                    event_type = "Yellow Card"
+                elif "red card" in raw_type_lower:
+                    event_type = "Red Card"
+                elif "goal" in raw_type_lower:
+                    event_type = "Goal"
+                else:
+                    event_type = "Unknown Event"
+
+                if event_type == "Unknown Event":
+                    continue
+
+                cursor.execute(
+                    """
+                    INSERT INTO matcheventlogs (match_id, TeamName, TeamCode, event_type, event_time, player_name, GroupLetter)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(game_id),
+                        event_team_name,
+                        event_team_code,
+                        event_type,
+                        event_time,
+                        player_name,
+                        event_group,
+                    ),
+                )
+                events_inserted += 1
+
         print(f"🚀 Success! Match {game_id} is live in 2026WorldCup.db.")
         print(f"   Saved box score details and {events_inserted} verified disciplinary rows.")
         conn.close()
 
     except Exception as e:
-        print(f"❌ Database write execution failed: {e}")
+        print(f"❌ Database write execution failed for Game ID {game_id}: {e}")
 
 
 if __name__ == "__main__":
-    # Fire it up for real!
-    ingest_espn_match("760417")
+    # Test execution block requiring a target tournament game id argument
+    sample_id = "760415"
+    ingest_espn_match(sample_id)
