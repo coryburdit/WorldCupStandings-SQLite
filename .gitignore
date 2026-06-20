@@ -686,4 +686,4 @@ $RECYCLE.BIN/
 
 #skip .db
 *.db
-.txt
+*.txt
