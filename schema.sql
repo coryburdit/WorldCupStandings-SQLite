@@ -405,6 +405,7 @@ INSERT INTO matcheventlogs VALUES(1552,760446,'Curaçao national football team',
 INSERT INTO matcheventlogs VALUES(1553,760446,'Curaçao national football team','CUW','Yellow Card','75''','Juriën Gaari','E');
 INSERT INTO matcheventlogs VALUES(1554,760446,'Curaçao national football team','CUW','Yellow Card','90''+1''','Gervane Kastaneer','E');
 INSERT INTO sqlite_sequence VALUES('matcheventlogs',1554);
+INSERT INTO sqlite_sequence VALUES('matcheventlogs',1554);
 CREATE VIEW v_fair_play_points_standings AS
 SELECT
     TeamCode,
@@ -552,17 +553,29 @@ CREATE VIEW v_wc_progress AS
 SELECT
     vwgs.*,
     CASE
-        -- 1. CONFIRMED QUALIFIED (Top 2 Teams)
-        WHEN [Group Rank] <= 2 AND [TP] >= (
-            SELECT MAX(target.[TP] + (3 - target.[MP]) * 3)
-            FROM v_worldcup_group_standings target
-            WHERE target.[Group Letter] = vwgs.[Group Letter] AND target.[Group Rank] = 3
+        -- 1. CONFIRMED QUALIFIED (Top 2 Spots Mathematically Locked)
+        -- Safe if they have 6 points after 2 games, OR if their current points are strictly higher
+        -- than the maximum possible points the 3rd place team can reach when factoring in the tiebreakers.
+        WHEN [Group Rank] <= 2 AND (
+            [TP] = 6 
+            OR [TP] > (
+                SELECT (target.[TP] + (3 - target.[MP]) * 3)
+                FROM v_worldcup_group_standings target
+                WHERE target.[Group Letter] = vwgs.[Group Letter] 
+                  AND target.[Group Rank] = 3
+                ORDER BY 
+                    (target.[TP] + (3 - target.[MP]) * 3) DESC, -- Max potential points
+                    target.[GD] DESC,                            -- Goal Difference
+                    target.[GF] DESC,                            -- Goals For
+                    target.[Fair Play Points] DESC               -- Fair Play Points
+                LIMIT 1
+            )
         ) THEN 'Confirmed Qualified'
 
-        -- 2. CONFIRMED QUALIFIED (As a Best 3rd Place Team)
+        -- 2. CONFIRMED QUALIFIED (As a Best 3rd Place Team - Only when group stage is fully completed)
         WHEN [Group Rank] = 3 AND [MP] = 3 AND [Third Place Global Rank] BETWEEN 1 AND 8 THEN 'Mathematically Qualified'
 
-        -- 3. ELIMINATED (Bottom 2 Teams)
+        -- 3. ELIMINATED (Bottom Teams & Head-to-Head Lockouts)
         WHEN [Group Rank] > 2 AND (
             ([TP] + (3 - [MP]) * 3) < (
                 SELECT target.[TP]
@@ -570,25 +583,29 @@ SELECT
                 WHERE target.[Group Letter] = vwgs.[Group Letter] AND target.[Group Rank] = 3
             )
             OR ([TP] + (3 - [MP]) * 3) < 3
+            OR ([MP] = 2 AND [TP] = 0 AND (
+                SELECT target.[TP] 
+                FROM v_worldcup_group_standings target 
+                WHERE target.[Group Letter] = vwgs.[Group Letter] AND target.[Group Rank] = 3
+            ) >= 3)
         ) THEN 'Eliminated'
 
-        -- 4. ELIMINATED (3rd Place Finished Team)
+        -- 4. ELIMINATED (3rd Place Finished Team out of the Wildcard)
         WHEN [Group Rank] = 3 AND [MP] = 3 AND [Third Place Global Rank] > 8 THEN 'Eliminated'
 
-        -- 5. LIVE QUALIFIED (Currently in Automatic Spots)
+        -- 5. LIVE QUALIFIED (Currently in Automatic Spots but not locked)
         WHEN [Group Rank] <= 2 THEN 'Mathematically Qualified'
 
-        -- 6. LIVE QUALIFIED (In Best 3rd Place Spots)
+        -- 6. LIVE QUALIFIED (Currently in Best 3rd Place Wildcard Spots)
         WHEN [Group Rank] = 3 AND [Third Place Global Rank] BETWEEN 1 AND 8 THEN 'Mathematically Qualified'
 
-        -- 7. LIVE (Still playing, currently outside qualification, but mathematically alive)
+        -- 7. LIVE (Still playing, outside qualification, but mathematically alive)
         WHEN [MP] < 3 AND ([TP] + (3 - [MP]) * 3) >= 3 THEN 'Live They Still have a Chance.'
 
         -- 8. FALLBACK
         ELSE 'Live Eliminated'
     END AS [Progression Status]
 FROM v_worldcup_group_standings vwgs
--- AUTOMATICALLY DITCH THE PLACEHOLDERS
 WHERE LENGTH([Team Name]) >= 16
 ;
 COMMIT;
